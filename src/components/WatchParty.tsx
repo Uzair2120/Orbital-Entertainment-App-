@@ -36,6 +36,23 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const candidateQueue = useRef<any[]>([]);
 
+  // Body scroll lock
+  useEffect(() => {
+    if (isOpen) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => { document.body.style.overflow = ''; };
+  }, [isOpen]);
+
+  // Auto scroll to bottom
+  useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages]);
+
   const joinRoom = (id?: string) => {
     const finalID = id || Math.random().toString(36).substring(2, 8).toUpperCase();
     setRoomID(finalID);
@@ -214,13 +231,46 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
         width: '100%', height: '100%',
         parentNode: jitsiContainerRef.current,
         userInfo: { displayName: user?.user_metadata?.full_name || 'Guest' },
-        configOverwrite: { startWithAudioMuted: true, disableDeepLinking: true, enableWelcomePage: false, prejoinPageEnabled: false },
-        interfaceConfigOverwrite: { TOOLBAR_BUTTONS: ['microphone', 'camera', 'hangup', 'tileview'], MOBILE_APP_PROMO: false }
+        configOverwrite: { 
+          startWithAudioMuted: true, 
+          disableDeepLinking: true, 
+          enableWelcomePage: false, 
+          prejoinPageEnabled: false,
+          p2p: { enabled: true }
+        },
+        interfaceConfigOverwrite: { 
+          TOOLBAR_BUTTONS: ['microphone', 'camera', 'hangup', 'tileview'], 
+          MOBILE_APP_PROMO: false,
+          VERTICAL_FILMSTRIP: true
+        }
       };
+      
       const scriptId = 'jitsi-external-api';
       let script = document.getElementById(scriptId) as HTMLScriptElement;
-      const startJitsi = () => { if ((window as any).JitsiMeetExternalAPI) { const api = new (window as any).JitsiMeetExternalAPI(domain, options); api.addEventListener('videoConferenceJoined', () => setIsJitsiLoading(false)); } };
-      if (!script) { script = document.createElement('script'); script.id = scriptId; script.src = `https://${domain}/external_api.js`; script.async = true; script.onload = startJitsi; document.body.appendChild(script); } else { startJitsi(); }
+      
+      const startJitsi = () => { 
+        if ((window as any).JitsiMeetExternalAPI) { 
+          const api = new (window as any).JitsiMeetExternalAPI(domain, options); 
+          api.addEventListener('videoConferenceJoined', () => setIsJitsiLoading(false)); 
+
+          // Fix permissions for the iframe
+          const iframe = jitsiContainerRef.current?.querySelector('iframe');
+          if (iframe) {
+            iframe.setAttribute('allow', 'camera; microphone; display-capture; autoplay; clipboard-write');
+          }
+        } 
+      };
+
+      if (!script) { 
+        script = document.createElement('script'); 
+        script.id = scriptId; 
+        script.src = `https://${domain}/external_api.js`; 
+        script.async = true; 
+        script.onload = startJitsi; 
+        document.body.appendChild(script); 
+      } else { 
+        startJitsi(); 
+      }
       return () => { if (jitsiContainerRef.current) jitsiContainerRef.current.innerHTML = ''; };
     }
   }, [isInRoom, roomID]);
@@ -240,71 +290,71 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
     <div className="fixed inset-0 bg-black z-[2500] flex flex-col overflow-hidden text-text-custom font-dm">
       {!isInRoom ? (
         <div className="flex-1 flex items-center justify-center p-6 bg-bg">
-          <div className="bg-surface border border-white/10 rounded-2xl max-w-[500px] w-full p-10 text-center shadow-[0_40px_100px_rgba(0,0,0,0.8)] animate-in zoom-in-95 duration-300">
+          <div className="bg-surface border border-white/10 rounded-2xl max-w-[500px] w-full p-6 sm:p-10 text-center shadow-[0_40px_100px_rgba(0,0,0,0.8)] animate-in zoom-in-95 duration-300 relative">
             <button className="absolute top-5 right-5 text-muted hover:text-white" onClick={onClose}>✕</button>
-            <div className="w-20 h-20 bg-accent/20 rounded-full flex items-center justify-center mx-auto mb-6 font-bebas text-4xl text-accent">P2P</div>
-            <h2 className="font-bebas text-5xl text-accent mb-2 tracking-wider">ORBITAL CINEMA</h2>
-            <p className="text-muted mb-8 text-xs uppercase tracking-widest font-light">Direct Peer-to-Peer Movie Streaming.</p>
+            <div className="w-16 h-16 sm:w-20 sm:h-20 bg-accent/20 rounded-full flex items-center justify-center mx-auto mb-6 font-bebas text-3xl sm:text-4xl text-accent">P2P</div>
+            <h2 className="font-bebas text-4xl sm:text-5xl text-accent mb-2 tracking-wider">ORBITAL CINEMA</h2>
+            <p className="text-muted mb-8 text-[0.65rem] uppercase tracking-widest font-light">Direct Peer-to-Peer Movie Streaming.</p>
             <div className="space-y-4">
               <button onClick={() => joinRoom()} className="w-full py-4 bg-accent text-bg font-bebas text-xl tracking-widest rounded-xl hover:bg-[#f5c85a] transition-all">CREATE THEATER</button>
               <div className="flex items-center gap-4 my-6"><div className="flex-1 h-px bg-white/10"></div><span className="text-muted text-[0.6rem] font-bebas tracking-widest">JOIN BY ID</span><div className="flex-1 h-px bg-white/10"></div></div>
-              <div className="flex gap-2">
-                <input type="text" placeholder="THEATER ID" className="flex-1 bg-surface2 border border-white/10 rounded-xl px-5 py-4 text-text-custom font-bebas outline-none focus:border-accent" value={roomID} onChange={(e) => setRoomID(e.target.value.toUpperCase())} />
-                <button onClick={() => roomID && joinRoom(roomID)} className="px-8 bg-surface2 border border-white/10 text-accent font-bebas text-xl rounded-xl">ENTER</button>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input type="text" placeholder="THEATER ID" className="flex-1 bg-surface2 border border-white/10 rounded-xl px-5 py-3.5 text-text-custom font-bebas outline-none focus:border-accent" value={roomID} onChange={(e) => setRoomID(e.target.value.toUpperCase())} />
+                <button onClick={() => roomID && joinRoom(roomID)} className="px-8 py-3.5 sm:py-0 bg-surface2 border border-white/10 text-accent font-bebas text-xl rounded-xl">ENTER</button>
               </div>
             </div>
           </div>
         </div>
       ) : (
         <div className="w-full h-full flex flex-col lg:flex-row overflow-hidden">
-          <div className="flex-[3] relative bg-black flex flex-col border-r border-white/10">
-            <div className="absolute top-4 left-4 z-[100] flex gap-3">
-               <div className="bg-black/60 backdrop-blur-md p-2 px-4 rounded-full border border-white/10 flex items-center gap-3">
-                  <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
-                  <span className="font-bebas text-sm tracking-widest text-white uppercase">{isAdmin ? 'PROJECTIONIST' : 'VIEWER'} | {roomID}</span>
+          <div className="flex-[3] relative bg-black flex flex-col border-r border-white/10 h-[50vh] lg:h-full">
+            <div className="absolute top-4 left-4 z-[100] flex flex-wrap gap-2 sm:gap-3">
+               <div className="bg-black/60 backdrop-blur-md p-1.5 px-3 sm:p-2 sm:px-4 rounded-full border border-white/10 flex items-center gap-2 sm:gap-3">
+                  <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-red-500 rounded-full animate-pulse"></div>
+                  <span className="font-bebas text-[0.6rem] sm:text-sm tracking-widest text-white uppercase">{isAdmin ? 'PROJECTIONIST' : 'VIEWER'} | {roomID}</span>
                </div>
                {isAdmin && (
-                 <>
-                   <label className="bg-white/10 backdrop-blur-md text-white font-bebas text-xs tracking-widest p-2 px-4 rounded-full hover:bg-white/20 transition-all cursor-pointer border border-white/10">
-                     📁 LOAD MOVIE
+                 <div className="flex gap-2">
+                   <label className="bg-white/10 backdrop-blur-md text-white font-bebas text-[0.6rem] sm:text-xs tracking-widest p-1.5 px-3 sm:p-2 sm:px-4 rounded-full hover:bg-white/20 transition-all cursor-pointer border border-white/10">
+                     📁 MOVIE
                      <input type="file" accept="video/*" className="hidden" onChange={handleFileSelect} />
                    </label>
                    {localFileUrl && (
-                     <button onClick={startCasting} className="bg-accent text-bg font-bebas text-xs tracking-widest px-4 py-2 rounded-full hover:bg-[#f5c85a] transition-all">
-                       📡 START CASTING TO FRIENDS
+                     <button onClick={startCasting} className="bg-accent text-bg font-bebas text-[0.6rem] sm:text-xs tracking-widest px-3 sm:px-4 py-1.5 sm:py-2 rounded-full hover:bg-[#f5c85a] transition-all">
+                       📡 CAST
                      </button>
                    )}
-                 </>
+                 </div>
                )}
             </div>
 
-            <div className="flex-1 w-full h-full bg-[#050505] flex items-center justify-center relative">
+            <div className="flex-1 w-full h-full bg-[#050505] flex items-center justify-center relative overflow-hidden">
               {isAdmin ? (
                 localFileUrl ? (
                   <video 
                     ref={videoRef} 
                     src={localFileUrl} 
-                    className="w-full h-full" 
+                    className="w-full h-full object-contain" 
                     controls 
                     crossOrigin="anonymous"
                     onPlay={() => handleVideoAction('play')} 
                     onPause={() => handleVideoAction('pause')}
                   />
                 ) : (
-                  <div className="text-center opacity-30"><p className="font-bebas text-2xl tracking-widest">SELECT A MOVIE TO START</p></div>
+                  <div className="text-center opacity-30"><p className="font-bebas text-xl sm:text-2xl tracking-widest">SELECT A MOVIE</p></div>
                 )
               ) : (
                 <div className="w-full h-full">
                   <video 
                     ref={guestStreamRef} 
-                    className="w-full h-full" 
+                    className="w-full h-full object-contain" 
                     autoPlay 
                     playsInline 
                   />
                   {!guestStreamRef.current?.srcObject && (
                     <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm z-10">
                       <div className="text-center opacity-30 animate-pulse">
-                        <p className="font-bebas text-2xl tracking-widest">WAITING FOR PROJECTIONIST...</p>
+                        <p className="font-bebas text-xl sm:text-2xl tracking-widest">WAITING FOR PROJECTIONIST...</p>
                       </div>
                     </div>
                   )}
@@ -313,37 +363,52 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
             </div>
 
 
-            <div className="bg-surface2/80 backdrop-blur-md p-3 px-6 flex items-center justify-between border-t border-white/10">
-               <div className="flex gap-3">
-                  <button onClick={() => { navigator.clipboard.writeText(roomID); showToast("Theater ID copied!", 'success'); }} className="bg-white/5 border border-white/10 text-white text-[0.65rem] px-4 py-2 rounded-full font-bebas tracking-widest hover:bg-white/10 transition-all uppercase">COPY ID</button>
-                  <button onClick={onClose} className="bg-red-500/10 border border-red-500/20 text-red-400 text-[0.65rem] px-4 py-2 rounded-full font-bebas tracking-widest uppercase">CLOSE THEATER</button>
+            <div className="bg-surface2/80 backdrop-blur-md p-2 sm:p-3 px-4 sm:px-6 flex items-center justify-between border-t border-white/10">
+               <div className="flex gap-2 sm:gap-3">
+                  <button onClick={() => { navigator.clipboard.writeText(roomID); showToast("Theater ID copied!", 'success'); }} className="bg-white/5 border border-white/10 text-white text-[0.55rem] sm:text-[0.65rem] px-3 sm:px-4 py-1.5 sm:py-2 rounded-full font-bebas tracking-widest hover:bg-white/10 transition-all uppercase">ID</button>
+                  <button onClick={onClose} className="bg-red-500/10 border border-red-500/20 text-red-400 text-[0.55rem] sm:text-[0.65rem] px-3 sm:px-4 py-1.5 sm:py-2 rounded-full font-bebas tracking-widest uppercase">EXIT</button>
                </div>
-               <span className="text-accent font-bebas text-sm tracking-[0.1em]">{participants} PEOPLE IN THEATER</span>
+               <span className="text-accent font-bebas text-[0.65rem] sm:text-sm tracking-[0.1em]">{participants} PEOPLE</span>
             </div>
           </div>
 
-          <div className="flex-1 flex flex-col bg-surface min-w-[320px]">
-            <div className="h-[250px] bg-black border-b border-white/10 relative overflow-hidden">
-               {isJitsiLoading && <div className="absolute inset-0 flex items-center justify-center bg-black z-20 text-[0.5rem] font-bebas tracking-widest text-accent animate-pulse">SETTING UP VIDEO CALL...</div>}
+          <div className="flex-1 flex flex-col bg-surface min-w-[320px] h-[50vh] lg:h-full overflow-hidden">
+            <div className="h-[180px] sm:h-[250px] bg-black border-b border-white/10 relative overflow-hidden shrink-0">
+               {isJitsiLoading && <div className="absolute inset-0 flex items-center justify-center bg-black z-20 text-[0.5rem] font-bebas tracking-widest text-accent animate-pulse uppercase">SETTING UP VIDEO CALL...</div>}
                <div ref={jitsiContainerRef} className="w-full h-full" />
             </div>
-            <div className="flex-1 flex flex-col overflow-hidden">
-               <div className="p-4 bg-surface2/50 border-b border-white/10 flex items-center gap-3">
-                  <div className="w-2 h-2 bg-accent rounded-full"></div>
-                  <h3 className="font-bebas text-lg text-text-custom tracking-widest uppercase">THEATER CHAT</h3>
+            <div className="flex-1 flex flex-col min-h-0 bg-surface">
+               <div className="p-3 sm:p-4 bg-surface2/50 border-b border-white/10 flex items-center gap-3 shrink-0">
+                  <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-accent rounded-full"></div>
+                  <h3 className="font-bebas text-base sm:text-lg text-text-custom tracking-widest uppercase">THEATER CHAT</h3>
                </div>
-               <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 no-scrollbar">
-                  {messages.map((msg, idx) => (
-                    <div key={idx} className={`flex flex-col ${msg.user_id === user?.id ? 'items-end' : 'items-start'}`}>
-                      <span className="text-[0.5rem] text-muted mb-1 uppercase tracking-widest">{msg.user_id === user?.id ? 'You' : msg.user_name}</span>
-                      <div className={`p-2.5 px-4 rounded-2xl text-[0.8rem] max-w-[85%] ${msg.user_id === user?.id ? 'bg-accent text-bg rounded-tr-none font-medium' : 'bg-surface2 text-text-custom rounded-tl-none border border-white/5'}`}>{msg.text}</div>
+               <div 
+                 className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 overscroll-contain touch-pan-y"
+                 style={{ overscrollBehavior: 'contain' }}
+               >
+                  {messages.length === 0 ? (
+                    <div className="flex-1 flex items-center justify-center text-muted text-[0.6rem] uppercase tracking-[0.2em] opacity-30 text-center px-10">
+                      No messages yet. Start the conversation!
                     </div>
-                  ))}
-                  <div ref={chatEndRef} />
+                  ) : (
+                    messages.map((msg, idx) => (
+                      <div key={idx} className={`flex flex-col ${msg.user_id === user?.id ? 'items-end' : 'items-start'}`}>
+                        <span className="text-[0.5rem] text-muted mb-1 uppercase tracking-widest">{msg.user_id === user?.id ? 'You' : msg.user_name}</span>
+                        <div className={`p-2 sm:p-2.5 px-3 sm:px-4 rounded-2xl text-[0.75rem] sm:text-[0.8rem] max-w-[85%] ${msg.user_id === user?.id ? 'bg-accent text-bg rounded-tr-none font-medium' : 'bg-surface2 text-text-custom rounded-tl-none border border-white/5'}`}>{msg.text}</div>
+                      </div>
+                    ))
+                  )}
+                  <div ref={chatEndRef} className="h-2 w-full shrink-0" />
                </div>
-               <form onSubmit={sendMessage} className="p-4 bg-surface2 border-t border-white/10 flex gap-2">
-                  <input type="text" placeholder="Type to chat..." className="flex-1 bg-bg border border-white/10 rounded-xl px-4 py-2.5 text-xs text-text-custom outline-none focus:border-accent" value={inputText} onChange={(e) => setInputText(e.target.value)} />
-                  <button type="submit" className="w-10 h-10 bg-accent text-bg rounded-xl flex items-center justify-center text-lg">➤</button>
+               <form onSubmit={sendMessage} className="p-3 sm:p-4 bg-surface2 border-t border-white/10 flex gap-2 shrink-0">
+                  <input 
+                    type="text" 
+                    placeholder="Type to chat..." 
+                    className="flex-1 bg-bg border border-white/10 rounded-xl px-4 py-2 text-[0.7rem] sm:text-xs text-text-custom outline-none focus:border-accent" 
+                    value={inputText} 
+                    onChange={(e) => setInputText(e.target.value)} 
+                  />
+                  <button type="submit" className="w-9 h-9 sm:w-10 sm:h-10 bg-accent text-bg rounded-xl flex items-center justify-center text-base sm:text-lg hover:bg-[#f5c85a] transition-all">➤</button>
                </form>
             </div>
           </div>
