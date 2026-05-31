@@ -57,7 +57,7 @@ const Chatbot: React.FC<ChatbotProps> = ({ favorites }) => {
       return "Error: It looks like your Gemini API Key is missing or is an invalid OAuth Token. Please use a real API Key from Google AI Studio.";
     }
 
-    const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
 
     // Create wishlist context
     let wishlistContext = "";
