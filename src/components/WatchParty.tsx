@@ -163,15 +163,19 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
 
     pc.ontrack = (event) => {
       console.log(`Received track from ${userId}`, event.streams[0]?.id);
-      // If it's a movie stream (isAdmin casting), put it in guestStreamRef
-      // We check if the stream ID starts with 'movie-' which we set during casting
-      if (isAdmin === false && event.streams[0]?.id.startsWith('movie-')) {
+      
+      // The crucial part: How to distinguish movie vs webcam
+      // When admin casts, we set a specific ID or check the track kind/label
+      const isMovieStream = event.streams[0]?.id.startsWith('movie-');
+
+      if (!isAdmin && isMovieStream) {
+        // This is the movie! Put it in the main theater view
         if (guestStreamRef.current) {
           guestStreamRef.current.srcObject = event.streams[0];
           guestStreamRef.current.play().catch(e => console.warn("Autoplay blocked", e));
         }
       } else {
-        // Otherwise it's a webcam stream
+        // This is a webcam/mic stream! Put it in the call grid
         if (event.streams[0]) {
           setRemoteStreams(prev => ({
             ...prev,
