@@ -34,7 +34,8 @@ const movieCats = {
 const seriesCats = {
   trending:   { url: '/trending/tv/day',     label: 'TRENDING SERIES' },
   popular:    { url: '/tv/popular',           label: 'POPULAR SERIES' },
-  top_rated:  { url: '/tv/top_rated',         label: 'TOP RATED' }
+  top_rated:  { url: '/tv/top_rated',         label: 'TOP RATED' },
+  upcoming:   { url: '/tv/on_the_air',        label: 'ON THE AIR' }
 };
 
 const gameCats = {
@@ -392,7 +393,7 @@ export default function Home() {
             setTotalPages(Math.ceil((d.numFound || 0) / 20));
           }
         } else if (mode === 'movies' || mode === 'series') {
-          const info = (mode === 'movies' ? movieCats : seriesCats)[cat as keyof typeof movieCats];
+          const info = (mode === 'movies' ? (movieCats as any) : (seriesCats as any))[cat];
           const d = await apiFetch(`${BASE_MOVIE}${info.url}?page=${currentPage}`);
           newItems = d.results || [];
           setTotalPages(d.total_pages || 1);
@@ -402,7 +403,7 @@ export default function Home() {
           newItems = d.results || [];
           setTotalPages(Math.ceil((d.count || 0) / 20));
         } else if (mode === 'music' || mode === 'books') {
-          const info = (mode === 'music' ? musicCats : bookCats)[cat as keyof typeof musicCats];
+          const info = (mode === 'music' ? (musicCats as any) : (bookCats as any))[cat];
           const url = mode === 'music' 
             ? `${BASE_MUSIC}?term=${info.term}&entity=song&limit=20&offset=${(currentPage - 1) * 20}`
             : `${BASE_BOOK}?q=${info.term}&page=${currentPage}&fields=key,title,author_name,cover_i,first_publish_year,description,subjects`;
