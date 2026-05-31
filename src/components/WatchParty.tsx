@@ -225,10 +225,12 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
   // Jitsi
   useEffect(() => {
     if (isInRoom && jitsiContainerRef.current) {
-      const domain = 'meet.jace.sh';
+      // Use the main Jitsi server for better reliability
+      const domain = 'meet.jit.si';
       const options = {
-        roomName: `OrbitalParty_${roomID}`,
-        width: '100%', height: '100%',
+        roomName: `OrbitalParty_${roomID.toLowerCase()}_${Math.floor(Math.random() * 1000)}`,
+        width: '100%',
+        height: '100%',
         parentNode: jitsiContainerRef.current,
         userInfo: { displayName: user?.user_metadata?.full_name || 'Guest' },
         configOverwrite: { 
@@ -239,7 +241,7 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
           p2p: { enabled: true }
         },
         interfaceConfigOverwrite: { 
-          TOOLBAR_BUTTONS: ['microphone', 'camera', 'hangup', 'tileview'], 
+          TOOLBAR_BUTTONS: ['microphone', 'camera', 'hangup', 'tileview', 'chat'], 
           MOBILE_APP_PROMO: false,
           VERTICAL_FILMSTRIP: true
         }
@@ -250,13 +252,18 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
       
       const startJitsi = () => { 
         if ((window as any).JitsiMeetExternalAPI) { 
-          const api = new (window as any).JitsiMeetExternalAPI(domain, options); 
-          api.addEventListener('videoConferenceJoined', () => setIsJitsiLoading(false)); 
+          try {
+            const api = new (window as any).JitsiMeetExternalAPI(domain, options); 
+            api.addEventListener('videoConferenceJoined', () => setIsJitsiLoading(false)); 
 
-          // Fix permissions for the iframe
-          const iframe = jitsiContainerRef.current?.querySelector('iframe');
-          if (iframe) {
-            iframe.setAttribute('allow', 'camera; microphone; display-capture; autoplay; clipboard-write');
+            // Robust permission setting
+            const iframe = jitsiContainerRef.current?.querySelector('iframe');
+            if (iframe) {
+              iframe.setAttribute('allow', 'camera; microphone; display-capture; autoplay; clipboard-write; speaker-fill; self *');
+            }
+          } catch (err) {
+            console.error("Jitsi Init Error:", err);
+            showToast("Video call failed to start.", 'error');
           }
         } 
       };
@@ -274,6 +281,13 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
       return () => { if (jitsiContainerRef.current) jitsiContainerRef.current.innerHTML = ''; };
     }
   }, [isInRoom, roomID]);
+
+  // Check for secure context (HTTPS)
+  useEffect(() => {
+    if (isOpen && !window.isSecureContext) {
+      showToast("Camera/Mic require HTTPS to work.", 'error');
+    }
+  }, [isOpen]);
 
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -306,21 +320,22 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
           </div>
         </div>
       ) : (
-        <div className="w-full h-full flex flex-col lg:flex-row overflow-hidden">
-          <div className="flex-[3] relative bg-black flex flex-col border-r border-white/10 h-[50vh] lg:h-full">
-            <div className="absolute top-4 left-4 z-[100] flex flex-wrap gap-2 sm:gap-3">
-               <div className="bg-black/60 backdrop-blur-md p-1.5 px-3 sm:p-2 sm:px-4 rounded-full border border-white/10 flex items-center gap-2 sm:gap-3">
-                  <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-red-500 rounded-full animate-pulse"></div>
-                  <span className="font-bebas text-[0.6rem] sm:text-sm tracking-widest text-white uppercase">{isAdmin ? 'PROJECTIONIST' : 'VIEWER'} | {roomID}</span>
+        <div className="w-full h-full flex flex-col lg:flex-row overflow-hidden bg-black">
+          {/* VIDEO SECTION (50% on mobile, 75% on desktop) */}
+          <div className="h-[45vh] lg:h-full lg:flex-[3] relative flex flex-col border-b lg:border-b-0 lg:border-r border-white/10 shrink-0">
+            <div className="absolute top-4 left-4 z-[100] flex flex-wrap gap-2">
+               <div className="bg-black/60 backdrop-blur-md p-1.5 px-3 rounded-full border border-white/10 flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse"></div>
+                  <span className="font-bebas text-[0.6rem] sm:text-xs tracking-widest text-white uppercase">{isAdmin ? 'PROJECTIONIST' : 'VIEWER'} | {roomID}</span>
                </div>
                {isAdmin && (
                  <div className="flex gap-2">
-                   <label className="bg-white/10 backdrop-blur-md text-white font-bebas text-[0.6rem] sm:text-xs tracking-widest p-1.5 px-3 sm:p-2 sm:px-4 rounded-full hover:bg-white/20 transition-all cursor-pointer border border-white/10">
+                   <label className="bg-white/10 backdrop-blur-md text-white font-bebas text-[0.6rem] sm:text-xs tracking-widest p-1.5 px-3 rounded-full hover:bg-white/20 transition-all cursor-pointer border border-white/10">
                      📁 MOVIE
                      <input type="file" accept="video/*" className="hidden" onChange={handleFileSelect} />
                    </label>
                    {localFileUrl && (
-                     <button onClick={startCasting} className="bg-accent text-bg font-bebas text-[0.6rem] sm:text-xs tracking-widest px-3 sm:px-4 py-1.5 sm:py-2 rounded-full hover:bg-[#f5c85a] transition-all">
+                     <button onClick={startCasting} className="bg-accent text-bg font-bebas text-[0.6rem] sm:text-xs tracking-widest px-3 py-1.5 rounded-full hover:bg-[#f5c85a] transition-all">
                        📡 CAST
                      </button>
                    )}
@@ -328,7 +343,7 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
                )}
             </div>
 
-            <div className="flex-1 w-full h-full bg-[#050505] flex items-center justify-center relative overflow-hidden">
+            <div className="flex-1 bg-[#050505] flex items-center justify-center relative overflow-hidden">
               {isAdmin ? (
                 localFileUrl ? (
                   <video 
@@ -341,74 +356,69 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
                     onPause={() => handleVideoAction('pause')}
                   />
                 ) : (
-                  <div className="text-center opacity-30"><p className="font-bebas text-xl sm:text-2xl tracking-widest">SELECT A MOVIE</p></div>
+                  <div className="text-center opacity-30"><p className="font-bebas text-xl tracking-widest">SELECT A MOVIE</p></div>
                 )
               ) : (
                 <div className="w-full h-full">
-                  <video 
-                    ref={guestStreamRef} 
-                    className="w-full h-full object-contain" 
-                    autoPlay 
-                    playsInline 
-                  />
+                  <video ref={guestStreamRef} className="w-full h-full object-contain" autoPlay playsInline />
                   {!guestStreamRef.current?.srcObject && (
                     <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm z-10">
-                      <div className="text-center opacity-30 animate-pulse">
-                        <p className="font-bebas text-xl sm:text-2xl tracking-widest">WAITING FOR PROJECTIONIST...</p>
-                      </div>
+                      <div className="text-center opacity-30 animate-pulse"><p className="font-bebas text-xl tracking-widest">WAITING...</p></div>
                     </div>
                   )}
                 </div>
               )}
             </div>
 
-
-            <div className="bg-surface2/80 backdrop-blur-md p-2 sm:p-3 px-4 sm:px-6 flex items-center justify-between border-t border-white/10">
-               <div className="flex gap-2 sm:gap-3">
-                  <button onClick={() => { navigator.clipboard.writeText(roomID); showToast("Theater ID copied!", 'success'); }} className="bg-white/5 border border-white/10 text-white text-[0.55rem] sm:text-[0.65rem] px-3 sm:px-4 py-1.5 sm:py-2 rounded-full font-bebas tracking-widest hover:bg-white/10 transition-all uppercase">ID</button>
-                  <button onClick={onClose} className="bg-red-500/10 border border-red-500/20 text-red-400 text-[0.55rem] sm:text-[0.65rem] px-3 sm:px-4 py-1.5 sm:py-2 rounded-full font-bebas tracking-widest uppercase">EXIT</button>
+            <div className="bg-surface2/80 backdrop-blur-md p-2 px-4 flex items-center justify-between border-t border-white/10 shrink-0">
+               <div className="flex gap-2">
+                  <button onClick={() => { navigator.clipboard.writeText(roomID); showToast("Copied!", 'success'); }} className="bg-white/5 border border-white/10 text-white text-[0.55rem] px-3 py-1.5 rounded-full font-bebas tracking-widest uppercase">ID</button>
+                  <button onClick={onClose} className="bg-red-500/10 border border-red-500/20 text-red-400 text-[0.55rem] px-3 py-1.5 rounded-full font-bebas tracking-widest uppercase">EXIT</button>
                </div>
-               <span className="text-accent font-bebas text-[0.65rem] sm:text-sm tracking-[0.1em]">{participants} PEOPLE</span>
+               <span className="text-accent font-bebas text-[0.65rem] tracking-[0.1em]">{participants} PEOPLE</span>
             </div>
           </div>
 
-          <div className="flex-1 flex flex-col bg-surface min-w-[320px] h-[50vh] lg:h-full overflow-hidden">
-            <div className="h-[180px] sm:h-[250px] bg-black border-b border-white/10 relative overflow-hidden shrink-0">
-               {isJitsiLoading && <div className="absolute inset-0 flex items-center justify-center bg-black z-20 text-[0.5rem] font-bebas tracking-widest text-accent animate-pulse uppercase">SETTING UP VIDEO CALL...</div>}
+          {/* CHAT & CALL SECTION (Remaining 55% on mobile, 25% on desktop) */}
+          <div className="flex-1 lg:flex-1 flex flex-col bg-surface overflow-hidden min-h-0">
+            {/* VIDEO CALL AREA (Fixed Height) */}
+            <div className="h-[220px] sm:h-[260px] lg:h-[320px] bg-black border-b border-white/10 relative overflow-hidden shrink-0">
+               {isJitsiLoading && <div className="absolute inset-0 flex items-center justify-center bg-black z-20 text-[0.5rem] font-bebas tracking-widest text-accent animate-pulse uppercase">SETTING UP VIDEO...</div>}
                <div ref={jitsiContainerRef} className="w-full h-full" />
             </div>
-            <div className="flex-1 flex flex-col min-h-0 bg-surface">
-               <div className="p-3 sm:p-4 bg-surface2/50 border-b border-white/10 flex items-center gap-3 shrink-0">
-                  <div className="w-1.5 h-1.5 sm:w-2 sm:h-2 bg-accent rounded-full"></div>
-                  <h3 className="font-bebas text-base sm:text-lg text-text-custom tracking-widest uppercase">THEATER CHAT</h3>
+
+            {/* CHAT AREA (Fills Remaining Space) */}
+            <div className="flex-1 flex flex-col overflow-hidden min-h-0">
+               <div className="p-3 bg-surface2/50 border-b border-white/10 flex items-center gap-3 shrink-0">
+                  <div className="w-1.5 h-1.5 bg-accent rounded-full"></div>
+                  <h3 className="font-bebas text-sm text-text-custom tracking-widest uppercase">THEATER CHAT</h3>
                </div>
-               <div 
-                 className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 overscroll-contain touch-pan-y"
-                 style={{ overscrollBehavior: 'contain' }}
-               >
+               
+               {/* SCROLLABLE MESSAGES */}
+               <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3 overscroll-contain no-scrollbar">
                   {messages.length === 0 ? (
-                    <div className="flex-1 flex items-center justify-center text-muted text-[0.6rem] uppercase tracking-[0.2em] opacity-30 text-center px-10">
-                      No messages yet. Start the conversation!
-                    </div>
+                    <div className="flex-1 flex items-center justify-center text-muted text-[0.6rem] uppercase tracking-[0.2em] opacity-20 text-center">No messages yet.</div>
                   ) : (
                     messages.map((msg, idx) => (
                       <div key={idx} className={`flex flex-col ${msg.user_id === user?.id ? 'items-end' : 'items-start'}`}>
-                        <span className="text-[0.5rem] text-muted mb-1 uppercase tracking-widest">{msg.user_id === user?.id ? 'You' : msg.user_name}</span>
-                        <div className={`p-2 sm:p-2.5 px-3 sm:px-4 rounded-2xl text-[0.75rem] sm:text-[0.8rem] max-w-[85%] ${msg.user_id === user?.id ? 'bg-accent text-bg rounded-tr-none font-medium' : 'bg-surface2 text-text-custom rounded-tl-none border border-white/5'}`}>{msg.text}</div>
+                        <span className="text-[0.45rem] text-muted mb-0.5 uppercase tracking-widest">{msg.user_id === user?.id ? 'You' : msg.user_name}</span>
+                        <div className={`p-2 px-3 rounded-xl text-[0.7rem] max-w-[90%] ${msg.user_id === user?.id ? 'bg-accent text-bg rounded-tr-none' : 'bg-surface2 text-text-custom rounded-tl-none border border-white/5'}`}>{msg.text}</div>
                       </div>
                     ))
                   )}
-                  <div ref={chatEndRef} className="h-2 w-full shrink-0" />
+                  <div ref={chatEndRef} className="h-1 shrink-0" />
                </div>
-               <form onSubmit={sendMessage} className="p-3 sm:p-4 bg-surface2 border-t border-white/10 flex gap-2 shrink-0">
+
+               {/* CHAT INPUT (Fixed at Bottom) */}
+               <form onSubmit={sendMessage} className="p-3 bg-surface2 border-t border-white/10 flex gap-2 shrink-0">
                   <input 
                     type="text" 
-                    placeholder="Type to chat..." 
-                    className="flex-1 bg-bg border border-white/10 rounded-xl px-4 py-2 text-[0.7rem] sm:text-xs text-text-custom outline-none focus:border-accent" 
+                    placeholder="Message..." 
+                    className="flex-1 bg-bg border border-white/10 rounded-xl px-3 py-2 text-[0.7rem] text-text-custom outline-none focus:border-accent" 
                     value={inputText} 
                     onChange={(e) => setInputText(e.target.value)} 
                   />
-                  <button type="submit" className="w-9 h-9 sm:w-10 sm:h-10 bg-accent text-bg rounded-xl flex items-center justify-center text-base sm:text-lg hover:bg-[#f5c85a] transition-all">➤</button>
+                  <button type="submit" className="w-8 h-8 bg-accent text-bg rounded-xl flex items-center justify-center text-sm hover:bg-[#f5c85a] transition-all">➤</button>
                </form>
             </div>
           </div>
