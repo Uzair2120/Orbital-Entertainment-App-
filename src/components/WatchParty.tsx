@@ -31,6 +31,7 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
   const [castingStream, setCastingStream] = useState<MediaStream | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
   const [isWebcamOn, setIsWebcamOn] = useState(false);
+  const [isMicOn, setIsMicOn] = useState(false);
 
   // Refs for WebRTC to avoid stale state in callbacks and unnecessary useEffect resets
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -88,32 +89,57 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
     }
   };
 
-  // WEB CAM ENGINE
-  const toggleWebcam = async () => {
-    if (isWebcamOn) {
-      localStreamRef.current?.getTracks().forEach((t: MediaStreamTrack) => t.stop());
-      setLocalStream(null);
-      localStreamRef.current = null;
-      setIsWebcamOn(false);
-      
-      // We should ideally remove tracks from PCs, but simplest is to just stop them
-      // Most browsers will stop sending video/audio
-      return;
-    }
-
+  // Helper to ensure local stream exists
+  const ensureLocalStream = async () => {
+    if (localStreamRef.current) return localStreamRef.current;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      setLocalStream(stream);
       localStreamRef.current = stream;
-      setIsWebcamOn(true);
+      setLocalStream(stream);
       
-      // Add webcam tracks to all active peer connections and renegotiate
+      // Default to both disabled initially if toggled individually, 
+      // but toggleWebcam/toggleMic will enable what's needed.
+      stream.getTracks().forEach(track => track.enabled = false);
+      
+      // Add tracks to all active peer connections
       for (const [userId, pc] of Object.entries(peerConnections.current)) {
         stream.getTracks().forEach((track: MediaStreamTrack) => pc.addTrack(track, stream));
         await sendOffer(userId);
       }
+      return stream;
     } catch (e) {
       showToast("Could not access camera/mic", 'error');
+      return null;
+    }
+  };
+
+  const toggleWebcam = async () => {
+    const stream = await ensureLocalStream();
+    if (!stream) return;
+
+    const newState = !isWebcamOn;
+    stream.getVideoTracks().forEach(track => track.enabled = newState);
+    setIsWebcamOn(newState);
+
+    if (!newState && !isMicOn) {
+      stream.getTracks().forEach(t => t.stop());
+      localStreamRef.current = null;
+      setLocalStream(null);
+    }
+  };
+
+  const toggleMic = async () => {
+    const stream = await ensureLocalStream();
+    if (!stream) return;
+
+    const newState = !isMicOn;
+    stream.getAudioTracks().forEach(track => track.enabled = newState);
+    setIsMicOn(newState);
+
+    if (!newState && !isWebcamOn) {
+      stream.getTracks().forEach(t => t.stop());
+      localStreamRef.current = null;
+      setLocalStream(null);
     }
   };
 
@@ -434,44 +460,64 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
           {/* CHAT & CALL SECTION */}
           <div className="flex-1 lg:flex-1 flex flex-col bg-surface overflow-hidden min-h-0">
             {/* VIDEO CALL AREA (CUSTOM P2P) */}
-            <div className="h-[220px] sm:h-[260px] lg:h-[320px] bg-black border-b border-white/10 relative overflow-hidden shrink-0 flex flex-col">
-               <div className="flex-1 overflow-y-auto p-2 grid grid-cols-2 gap-2 content-start no-scrollbar">
-                  {/* Local Video */}
-                  <div className="relative aspect-video bg-surface2 rounded-lg overflow-hidden border border-white/5">
-                    {localStream ? (
-                      <video 
-                        ref={el => { if (el) el.srcObject = localStream; }} 
-                        autoPlay 
-                        playsInline 
-                        muted 
-                        className="w-full h-full object-cover scale-x-[-1]" 
-                      />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-[0.5rem] font-bebas tracking-widest text-muted">CAMERA OFF</div>
-                    )}
-                    <div className="absolute bottom-1 left-1 bg-black/60 px-1.5 py-0.5 rounded text-[0.4rem] font-bebas text-accent tracking-widest uppercase">YOU</div>
-                  </div>
-
-                  {/* Remote Videos */}
-                  {Object.entries(remoteStreams).map(([peerId, stream]) => (
-                    <div key={peerId} className="relative aspect-video bg-surface2 rounded-lg overflow-hidden border border-white/5">
-                      <video 
-                        ref={el => { if (el) el.srcObject = stream; }} 
-                        autoPlay 
-                        playsInline 
-                        className="w-full h-full object-cover" 
-                      />
-                      <div className="absolute bottom-1 left-1 bg-black/60 px-1.5 py-0.5 rounded text-[0.4rem] font-bebas text-white tracking-widest uppercase">FRIEND</div>
+            <div className="h-[220px] sm:h-[260px] lg:h-[320px] bg-black border-b border-white/10 relative overflow-hidden shrink-0">
+               {/* Main Video Area (Remote) */}
+               <div className="absolute inset-0">
+                  {Object.entries(remoteStreams).length > 0 ? (
+                    Object.entries(remoteStreams).map(([peerId, stream], idx) => (
+                      <div key={peerId} className={`absolute inset-0 transition-opacity duration-500 ${idx === 0 ? 'opacity-100' : 'opacity-0'}`}>
+                        <video 
+                          ref={el => { if (el) el.srcObject = stream; }} 
+                          autoPlay 
+                          playsInline 
+                          className="w-full h-full object-cover" 
+                        />
+                        <div className="absolute bottom-3 left-3 bg-black/40 backdrop-blur-md px-2 py-1 rounded text-[0.5rem] font-bebas text-white tracking-widest uppercase border border-white/10">FRIEND</div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center bg-gradient-to-b from-bg to-black">
+                       <div className="text-center opacity-20">
+                          <div className="w-12 h-12 bg-accent/20 rounded-full flex items-center justify-center mx-auto mb-2">
+                             <span className="text-accent text-xl">👤</span>
+                          </div>
+                          <p className="font-bebas text-[0.6rem] tracking-[0.2em] text-muted">WAITING FOR OTHERS</p>
+                       </div>
                     </div>
-                  ))}
+                  )}
+               </div>
+
+               {/* PiP Overlay (Local Video) */}
+               <div className="absolute top-4 right-4 w-28 sm:w-36 aspect-video bg-surface/80 backdrop-blur-md rounded-xl overflow-hidden border border-white/20 shadow-2xl z-50 transition-all hover:scale-105 group">
+                  {localStream ? (
+                    <video 
+                      ref={el => { if (el) el.srcObject = localStream; }} 
+                      autoPlay 
+                      playsInline 
+                      muted 
+                      className="w-full h-full object-cover scale-x-[-1]" 
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-[0.4rem] font-bebas tracking-widest text-muted bg-surface2">CAM OFF</div>
+                  )}
+                  <div className="absolute bottom-1.5 left-1.5 bg-black/60 px-1.5 py-0.5 rounded text-[0.35rem] font-bebas text-accent tracking-widest uppercase">YOU</div>
                </div>
                
-               <div className="p-2 border-t border-white/5 bg-surface/50 flex justify-center">
+               {/* Controls Overlay */}
+               <div className="absolute bottom-4 right-4 z-50 flex gap-2">
+                  <button 
+                    onClick={toggleMic} 
+                    className={`w-10 h-10 rounded-full flex items-center justify-center transition-all shadow-lg border ${isMicOn ? 'bg-accent text-bg border-accent shadow-accent/20' : 'bg-red-500/20 border-red-500/50 text-red-500 hover:bg-red-500 hover:text-white'}`}
+                    title={isMicOn ? 'Mute Mic' : 'Unmute Mic'}
+                  >
+                    {isMicOn ? '🎙️' : '🔇'}
+                  </button>
                   <button 
                     onClick={toggleWebcam} 
-                    className={`px-4 py-1.5 rounded-full font-bebas text-[0.6rem] tracking-widest transition-all ${isWebcamOn ? 'bg-red-500 text-white' : 'bg-accent text-bg'}`}
+                    className={`w-10 h-10 rounded-full flex items-center justify-center transition-all shadow-lg border ${isWebcamOn ? 'bg-accent text-bg border-accent shadow-accent/20' : 'bg-red-500/20 border-red-500/50 text-red-500 hover:bg-red-500 hover:text-white'}`}
+                    title={isWebcamOn ? 'Stop Camera' : 'Start Camera'}
                   >
-                    {isWebcamOn ? '🔴 STOP CAMERA' : '📷 START CAMERA'}
+                    {isWebcamOn ? '📷' : '✕'}
                   </button>
                </div>
             </div>
