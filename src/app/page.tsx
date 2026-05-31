@@ -104,14 +104,14 @@ export default function Home() {
   const [isAudioLoading, setIsAudioLoading] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
-  const showToast = (message: string, type: 'info' | 'error' | 'success' = 'info') => {
+  const showToast = useCallback((message: string, type: 'info' | 'error' | 'success' = 'info') => {
     const id = Math.random().toString(36).substring(2, 9);
     setToasts(prev => [...prev, { id, message, type }]);
-  };
+  }, []);
 
-  const removeToast = (id: string) => {
+  const removeToast = useCallback((id: string) => {
     setToasts(prev => prev.filter(t => t.id !== id));
-  };
+  }, []);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const playingPromiseRef = useRef<Promise<void> | null>(null);
@@ -121,20 +121,65 @@ export default function Home() {
     let finalUrl = url;
     const cleanOptions = { ...options, signal: abortControllerRef.current?.signal };
     
+    // Add TMDB API Key if needed
     if (url.includes('api.themoviedb.org')) {
+      if (!API_KEY) {
+        console.warn('TMDB API Key is missing. Please set NEXT_PUBLIC_TMDB_API_KEY in .env.local');
+      }
       finalUrl += (url.includes('?') ? '&' : '?') + `api_key=${API_KEY}`;
       if (cleanOptions.headers?.Authorization) delete cleanOptions.headers.Authorization;
     }
 
+    // iTunes does NOT support CORS. We must use JSONP or a proxy.
+    // Since we're in a client component, we can use a JSONP approach for iTunes.
+    if (url.includes('itunes.apple.com')) {
+      return new Promise((resolve, reject) => {
+        const callbackName = `itunes_cb_${Math.random().toString(36).substring(2, 10)}`;
+        (window as any)[callbackName] = (data: any) => {
+          delete (window as any)[callbackName];
+          const script = document.getElementById(callbackName);
+          if (script) script.remove();
+          resolve(data);
+        };
+
+        const script = document.createElement('script');
+        script.id = callbackName;
+        script.src = `${finalUrl}${finalUrl.includes('?') ? '&' : '?'}callback=${callbackName}`;
+        script.onerror = () => {
+          delete (window as any)[callbackName];
+          script.remove();
+          reject(new Error('iTunes JSONP Request Failed'));
+        };
+        document.body.appendChild(script);
+
+        // Timeout for JSONP
+        setTimeout(() => {
+          if ((window as any)[callbackName]) {
+            delete (window as any)[callbackName];
+            script.remove();
+            reject(new Error('iTunes Request Timed Out'));
+          }
+        }, 10000);
+      });
+    }
+
     try {
       const r = await fetch(finalUrl, cleanOptions);
-      if (!r.ok) throw new Error(`API Error: ${r.status}`);
+      if (!r.ok) {
+        const errData = await r.json().catch(() => ({}));
+        throw new Error(`API Error: ${r.status} ${errData.status_message || ''}`);
+      }
       return r.json();
     } catch (e: any) {
       if (e.name === 'AbortError') return { results: [], docs: [] };
+      console.error(`Fetch error for ${url}:`, e);
+      // Provide a more helpful error for "Failed to fetch"
+      if (e.message === 'Failed to fetch') {
+        showToast("Network Error: Could not reach the API. Please check your connection or ad-blocker.", 'error');
+      }
       throw e;
     }
-  }, []);
+  }, [showToast]);
 
   const syncData = useCallback(async (direction: 'upload' | 'download', currentUser: any, currentFavorites?: any) => {
     if (!currentUser) return;

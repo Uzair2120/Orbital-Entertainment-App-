@@ -17,7 +17,6 @@ interface WatchPartyProps {
   user: any;
   showToast: (msg: string, type?: 'info' | 'error' | 'success') => void;
 }
-
 const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToast }) => {
   const [roomID, setRoomID] = useState<string>('');
   const [isInRoom, setIsInRoom] = useState(false);
@@ -25,16 +24,21 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
   const [inputText, setInputText] = useState('');
   const [participants, setParticipants] = useState<number>(0);
   const [isAdmin, setIsAdmin] = useState(false);
-  const [isJitsiLoading, setIsJitsiLoading] = useState(true);
+  const [isVideoLoading, setIsVideoLoading] = useState(true);
   const [localFileUrl, setLocalFileUrl] = useState<string>('');
-  
+
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [castingStream, setCastingStream] = useState<MediaStream | null>(null);
+  const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
+  const [isWebcamOn, setIsWebcamOn] = useState(false);
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const guestStreamRef = useRef<HTMLVideoElement>(null);
-  const jitsiContainerRef = useRef<HTMLDivElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const channelRef = useRef<any>(null);
-  const pcRef = useRef<RTCPeerConnection | null>(null);
-  const candidateQueue = useRef<any[]>([]);
+  const peerConnections = useRef<Record<string, RTCPeerConnection>>({});
+  const candidateQueue = useRef<Record<string, any[]>>({});
+
 
   // Body scroll lock
   useEffect(() => {
@@ -60,10 +64,33 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
     if (!id) setIsAdmin(true); 
   };
 
-  // WebRTC Setup for P2P Casting
-  const setupWebRTC = async () => {
-    if (pcRef.current) pcRef.current.close();
-    
+  // WEB CAM ENGINE
+  const toggleWebcam = async () => {
+    if (isWebcamOn) {
+      localStream?.getTracks().forEach(t => t.stop());
+      setLocalStream(null);
+      setIsWebcamOn(false);
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      setLocalStream(stream);
+      setIsWebcamOn(true);
+      
+      // Add webcam tracks to all active peer connections
+      Object.values(peerConnections.current).forEach(pc => {
+        stream.getTracks().forEach(track => pc.addTrack(track, stream));
+      });
+    } catch (e) {
+      showToast("Could not access camera/mic", 'error');
+    }
+  };
+
+  // WebRTC Setup
+  const createPeerConnection = (userId: string) => {
+    if (peerConnections.current[userId]) return peerConnections.current[userId];
+
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
     });
@@ -73,31 +100,55 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
         channelRef.current.send({
           type: 'broadcast',
           event: 'ice-candidate',
-          payload: { candidate: event.candidate }
+          payload: { candidate: event.candidate, from: user?.id || 'guest', to: userId }
         });
       }
     };
 
     pc.ontrack = (event) => {
-      if (guestStreamRef.current) {
-        guestStreamRef.current.srcObject = event.streams[0];
+      // If it's a movie stream (isAdmin casting), put it in guestStreamRef
+      if (isAdmin === false && event.streams[0].id === 'movie-stream') {
+        if (guestStreamRef.current) guestStreamRef.current.srcObject = event.streams[0];
+      } else {
+        // Otherwise it's a webcam stream
+        setRemoteStreams(prev => ({
+          ...prev,
+          [userId]: event.streams[0]
+        }));
       }
     };
 
-    pcRef.current = pc;
+    // Add webcam if on
+    if (localStream) {
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    }
+    
+    // Add movie if casting
+    if (isAdmin && castingStream) {
+      castingStream.getTracks().forEach(track => pc.addTrack(track, castingStream));
+    }
+
+    peerConnections.current[userId] = pc;
     return pc;
   };
 
-  const processCandidates = async () => {
-    if (!pcRef.current || !pcRef.current.remoteDescription) return;
-    while (candidateQueue.current.length > 0) {
-      const candidate = candidateQueue.current.shift();
-      try {
-        await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
-      } catch (e) {
-        console.error("Error adding queued candidate", e);
-      }
-    }
+  const startCasting = async () => {
+    if (!isAdmin || !videoRef.current) return;
+    
+    // @ts-ignore
+    const stream = videoRef.current.captureStream ? videoRef.current.captureStream(60) : (videoRef.current as any).mozCaptureStream(60);
+    
+    // Create a unique ID for movie stream so viewers can identify it
+    // @ts-ignore
+    stream.id = 'movie-stream';
+    setCastingStream(stream);
+    
+    // Add movie tracks to all active peer connections
+    Object.values(peerConnections.current).forEach(pc => {
+      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+    });
+
+    showToast("Casting started!", 'success');
   };
 
   // MASTER SYNC & P2P ENGINE
@@ -115,30 +166,48 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
         if (payload.user_id !== user?.id) setMessages(prev => [...prev, payload]);
       })
       .on('broadcast', { event: 'offer' }, async ({ payload }) => {
-        if (!isAdmin) {
-          const pc = await setupWebRTC();
+        if (payload.to === (user?.id || 'guest')) {
+          const pc = createPeerConnection(payload.from);
           await pc.setRemoteDescription(new RTCSessionDescription(payload.offer));
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
-          channel.send({ type: 'broadcast', event: 'answer', payload: { answer } });
-          await processCandidates();
+          channel.send({ 
+            type: 'broadcast', 
+            event: 'answer', 
+            payload: { answer, from: user?.id || 'guest', to: payload.from } 
+          });
+          
+          if (candidateQueue.current[payload.from]) {
+            while (candidateQueue.current[payload.from].length > 0) {
+              const cand = candidateQueue.current[payload.from].shift();
+              await pc.addIceCandidate(new RTCIceCandidate(cand));
+            }
+          }
         }
       })
       .on('broadcast', { event: 'answer' }, async ({ payload }) => {
-        if (isAdmin && pcRef.current) {
-          await pcRef.current.setRemoteDescription(new RTCSessionDescription(payload.answer));
-          await processCandidates();
+        if (payload.to === (user?.id || 'guest')) {
+          const pc = peerConnections.current[payload.from];
+          if (pc) {
+            await pc.setRemoteDescription(new RTCSessionDescription(payload.answer));
+            if (candidateQueue.current[payload.from]) {
+              while (candidateQueue.current[payload.from].length > 0) {
+                const cand = candidateQueue.current[payload.from].shift();
+                await pc.addIceCandidate(new RTCIceCandidate(cand));
+              }
+            }
+          }
         }
       })
       .on('broadcast', { event: 'ice-candidate' }, async ({ payload }) => {
-        if (pcRef.current && pcRef.current.remoteDescription) {
-          try {
-            await pcRef.current.addIceCandidate(new RTCIceCandidate(payload.candidate));
-          } catch (e) {
-            console.error("Error adding candidate", e);
+        if (payload.to === (user?.id || 'guest')) {
+          const pc = peerConnections.current[payload.from];
+          if (pc && pc.remoteDescription) {
+            await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+          } else {
+            if (!candidateQueue.current[payload.from]) candidateQueue.current[payload.from] = [];
+            candidateQueue.current[payload.from].push(payload.candidate);
           }
-        } else {
-          candidateQueue.current.push(payload.candidate);
         }
       })
       .on('broadcast', { event: 'video_control' }, ({ payload }) => {
@@ -152,58 +221,50 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
           }
         }
       })
+      .on('presence', { event: 'join' }, async ({ newPresences }) => {
+        newPresences.forEach(async (p: any) => {
+          if (p.user !== (user?.id || 'guest')) {
+            const pc = createPeerConnection(p.user);
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            channel.send({
+              type: 'broadcast',
+              event: 'offer',
+              payload: { offer, from: user?.id || 'guest', to: p.user }
+            });
+          }
+        });
+      })
+      .on('presence', { event: 'leave' }, ({ leftPresences }) => {
+        leftPresences.forEach((p: any) => {
+          if (peerConnections.current[p.user]) {
+            peerConnections.current[p.user].close();
+            delete peerConnections.current[p.user];
+          }
+          setRemoteStreams(prev => {
+            const next = { ...prev };
+            delete next[p.user];
+            return next;
+          });
+        });
+      })
       .on('presence', { event: 'sync' }, () => {
         setParticipants(Object.keys(channel.presenceState()).length);
       })
       .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
           await channel.track({ user: user?.id || 'guest', name: user?.user_metadata?.full_name || 'Guest' });
+          setIsVideoLoading(false);
         }
       });
 
     return () => {
       supabase.removeChannel(channel);
-      pcRef.current?.close();
+      Object.values(peerConnections.current).forEach(pc => pc.close());
+      localStream?.getTracks().forEach(t => t.stop());
+      castingStream?.getTracks().forEach(t => t.stop());
     };
-  }, [isInRoom, roomID, isAdmin]);
-
-  // Master function to boost WebRTC Bitrate (SDP Munging)
-  const setHighBitrate = (sdp: string) => {
-    return sdp.replace(/a=fmtp:(\d+) \S*/g, (line) => {
-      if (line.includes('max-fs') || line.includes('max-fr')) return line;
-      return line + ';x-google-max-bitrate=10000;x-google-min-bitrate=5000;x-google-start-bitrate=8000';
-    });
-  };
-
-  const startCasting = async () => {
-    if (!isAdmin || !videoRef.current || !channelRef.current) return;
-    
-    const pc = await setupWebRTC();
-    // Capture at 60fps for smoothness if possible
-    // @ts-ignore
-    const stream = videoRef.current.captureStream ? videoRef.current.captureStream(60) : (videoRef.current as any).mozCaptureStream(60);
-    
-    stream.getTracks().forEach((track: MediaStreamTrack) => pc.addTrack(track, stream));
-    
-    const offer = await pc.createOffer({
-      offerToReceiveVideo: true,
-      offerToReceiveAudio: true
-    });
-
-    // Munge SDP to force high bitrate
-    const highQualityOffer = {
-      type: offer.type,
-      sdp: setHighBitrate(offer.sdp!)
-    };
-    
-    await pc.setLocalDescription(highQualityOffer);
-    
-    channelRef.current.send({
-      type: 'broadcast',
-      event: 'offer',
-      payload: { offer: highQualityOffer }
-    });
-  };
+  }, [isInRoom, roomID, user, localStream, castingStream]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -213,7 +274,7 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
     }
   };
 
-  const handleVideoAction = async (action: 'play' | 'pause') => {
+  const handleVideoAction = (action: 'play' | 'pause') => {
     if (!isAdmin || !videoRef.current || !channelRef.current) return;
     channelRef.current.send({
       type: 'broadcast',
@@ -221,66 +282,6 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
       payload: { action, time: videoRef.current.currentTime }
     });
   };
-
-  // Jitsi
-  useEffect(() => {
-    if (isInRoom && jitsiContainerRef.current) {
-      // Use the main Jitsi server for better reliability
-      const domain = 'meet.jit.si';
-      const options = {
-        roomName: `OrbitalParty_${roomID.toLowerCase()}_${Math.floor(Math.random() * 1000)}`,
-        width: '100%',
-        height: '100%',
-        parentNode: jitsiContainerRef.current,
-        userInfo: { displayName: user?.user_metadata?.full_name || 'Guest' },
-        configOverwrite: { 
-          startWithAudioMuted: true, 
-          disableDeepLinking: true, 
-          enableWelcomePage: false, 
-          prejoinPageEnabled: false,
-          p2p: { enabled: true }
-        },
-        interfaceConfigOverwrite: { 
-          TOOLBAR_BUTTONS: ['microphone', 'camera', 'hangup', 'tileview', 'chat'], 
-          MOBILE_APP_PROMO: false,
-          VERTICAL_FILMSTRIP: true
-        }
-      };
-      
-      const scriptId = 'jitsi-external-api';
-      let script = document.getElementById(scriptId) as HTMLScriptElement;
-      
-      const startJitsi = () => { 
-        if ((window as any).JitsiMeetExternalAPI) { 
-          try {
-            const api = new (window as any).JitsiMeetExternalAPI(domain, options); 
-            api.addEventListener('videoConferenceJoined', () => setIsJitsiLoading(false)); 
-
-            // Robust permission setting
-            const iframe = jitsiContainerRef.current?.querySelector('iframe');
-            if (iframe) {
-              iframe.setAttribute('allow', 'camera; microphone; display-capture; autoplay; clipboard-write; speaker-fill; self *');
-            }
-          } catch (err) {
-            console.error("Jitsi Init Error:", err);
-            showToast("Video call failed to start.", 'error');
-          }
-        } 
-      };
-
-      if (!script) { 
-        script = document.createElement('script'); 
-        script.id = scriptId; 
-        script.src = `https://${domain}/external_api.js`; 
-        script.async = true; 
-        script.onload = startJitsi; 
-        document.body.appendChild(script); 
-      } else { 
-        startJitsi(); 
-      }
-      return () => { if (jitsiContainerRef.current) jitsiContainerRef.current.innerHTML = ''; };
-    }
-  }, [isInRoom, roomID]);
 
   // Check for secure context (HTTPS)
   useEffect(() => {
@@ -321,7 +322,7 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
         </div>
       ) : (
         <div className="w-full h-full flex flex-col lg:flex-row overflow-hidden bg-black">
-          {/* VIDEO SECTION (50% on mobile, 75% on desktop) */}
+          {/* VIDEO SECTION */}
           <div className="h-[45vh] lg:h-full lg:flex-[3] relative flex flex-col border-b lg:border-b-0 lg:border-r border-white/10 shrink-0">
             <div className="absolute top-4 left-4 z-[100] flex flex-wrap gap-2">
                <div className="bg-black/60 backdrop-blur-md p-1.5 px-3 rounded-full border border-white/10 flex items-center gap-2">
@@ -379,15 +380,52 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
             </div>
           </div>
 
-          {/* CHAT & CALL SECTION (Remaining 55% on mobile, 25% on desktop) */}
+          {/* CHAT & CALL SECTION */}
           <div className="flex-1 lg:flex-1 flex flex-col bg-surface overflow-hidden min-h-0">
-            {/* VIDEO CALL AREA (Fixed Height) */}
-            <div className="h-[220px] sm:h-[260px] lg:h-[320px] bg-black border-b border-white/10 relative overflow-hidden shrink-0">
-               {isJitsiLoading && <div className="absolute inset-0 flex items-center justify-center bg-black z-20 text-[0.5rem] font-bebas tracking-widest text-accent animate-pulse uppercase">SETTING UP VIDEO...</div>}
-               <div ref={jitsiContainerRef} className="w-full h-full" />
+            {/* VIDEO CALL AREA (CUSTOM P2P) */}
+            <div className="h-[220px] sm:h-[260px] lg:h-[320px] bg-black border-b border-white/10 relative overflow-hidden shrink-0 flex flex-col">
+               <div className="flex-1 overflow-y-auto p-2 grid grid-cols-2 gap-2 content-start no-scrollbar">
+                  {/* Local Video */}
+                  <div className="relative aspect-video bg-surface2 rounded-lg overflow-hidden border border-white/5">
+                    {localStream ? (
+                      <video 
+                        ref={el => { if (el) el.srcObject = localStream; }} 
+                        autoPlay 
+                        playsInline 
+                        muted 
+                        className="w-full h-full object-cover scale-x-[-1]" 
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-[0.5rem] font-bebas tracking-widest text-muted">CAMERA OFF</div>
+                    )}
+                    <div className="absolute bottom-1 left-1 bg-black/60 px-1.5 py-0.5 rounded text-[0.4rem] font-bebas text-accent tracking-widest uppercase">YOU</div>
+                  </div>
+
+                  {/* Remote Videos */}
+                  {Object.entries(remoteStreams).map(([peerId, stream]) => (
+                    <div key={peerId} className="relative aspect-video bg-surface2 rounded-lg overflow-hidden border border-white/5">
+                      <video 
+                        ref={el => { if (el) el.srcObject = stream; }} 
+                        autoPlay 
+                        playsInline 
+                        className="w-full h-full object-cover" 
+                      />
+                      <div className="absolute bottom-1 left-1 bg-black/60 px-1.5 py-0.5 rounded text-[0.4rem] font-bebas text-white tracking-widest uppercase">FRIEND</div>
+                    </div>
+                  ))}
+               </div>
+               
+               <div className="p-2 border-t border-white/5 bg-surface/50 flex justify-center">
+                  <button 
+                    onClick={toggleWebcam} 
+                    className={`px-4 py-1.5 rounded-full font-bebas text-[0.6rem] tracking-widest transition-all ${isWebcamOn ? 'bg-red-500 text-white' : 'bg-accent text-bg'}`}
+                  >
+                    {isWebcamOn ? '🔴 STOP CAMERA' : '📷 START CAMERA'}
+                  </button>
+               </div>
             </div>
 
-            {/* CHAT AREA (Fills Remaining Space) */}
+            {/* CHAT AREA */}
             <div className="flex-1 flex flex-col overflow-hidden min-h-0">
                <div className="p-3 bg-surface2/50 border-b border-white/10 flex items-center gap-3 shrink-0">
                   <div className="w-1.5 h-1.5 bg-accent rounded-full"></div>
@@ -409,7 +447,7 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
                   <div ref={chatEndRef} className="h-1 shrink-0" />
                </div>
 
-               {/* CHAT INPUT (Fixed at Bottom) */}
+               {/* CHAT INPUT */}
                <form onSubmit={sendMessage} className="p-3 bg-surface2 border-t border-white/10 flex gap-2 shrink-0">
                   <input 
                     type="text" 
