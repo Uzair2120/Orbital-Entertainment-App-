@@ -67,7 +67,7 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
   // WEB CAM ENGINE
   const toggleWebcam = async () => {
     if (isWebcamOn) {
-      localStream?.getTracks().forEach(t => t.stop());
+      localStream?.getTracks().forEach((t: MediaStreamTrack) => t.stop());
       setLocalStream(null);
       setIsWebcamOn(false);
       return;
@@ -80,7 +80,7 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
       
       // Add webcam tracks to all active peer connections
       Object.values(peerConnections.current).forEach(pc => {
-        stream.getTracks().forEach(track => pc.addTrack(track, stream));
+        stream.getTracks().forEach((track: MediaStreamTrack) => pc.addTrack(track, stream));
       });
     } catch (e) {
       showToast("Could not access camera/mic", 'error');
@@ -120,12 +120,12 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
 
     // Add webcam if on
     if (localStream) {
-      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+      localStream.getTracks().forEach((track: MediaStreamTrack) => pc.addTrack(track, localStream));
     }
     
     // Add movie if casting
     if (isAdmin && castingStream) {
-      castingStream.getTracks().forEach(track => pc.addTrack(track, castingStream));
+      castingStream.getTracks().forEach((track: MediaStreamTrack) => pc.addTrack(track, castingStream));
     }
 
     peerConnections.current[userId] = pc;
@@ -145,13 +145,14 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
     
     // Add movie tracks to all active peer connections
     Object.values(peerConnections.current).forEach(pc => {
-      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+      stream.getTracks().forEach((track: MediaStreamTrack) => pc.addTrack(track, stream));
     });
 
     showToast("Casting started!", 'success');
-  };
+    };
 
-  // MASTER SYNC & P2P ENGINE
+    // MASTER SYNC & P2P ENGINE
+
   useEffect(() => {
     if (!isInRoom || !roomID) return;
 
@@ -261,8 +262,8 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
     return () => {
       supabase.removeChannel(channel);
       Object.values(peerConnections.current).forEach(pc => pc.close());
-      localStream?.getTracks().forEach(t => t.stop());
-      castingStream?.getTracks().forEach(t => t.stop());
+      localStream?.getTracks().forEach((t: MediaStreamTrack) => t.stop());
+      castingStream?.getTracks().forEach((t: MediaStreamTrack) => t.stop());
     };
   }, [isInRoom, roomID, user, localStream, castingStream]);
 
