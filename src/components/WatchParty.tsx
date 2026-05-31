@@ -36,6 +36,7 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
   // Refs for WebRTC to avoid stale state in callbacks and unnecessary useEffect resets
   const localStreamRef = useRef<MediaStream | null>(null);
   const castingStreamRef = useRef<MediaStream | null>(null);
+  const movieStreamIdRef = useRef<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const guestStreamRef = useRef<HTMLVideoElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -164,24 +165,22 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
     pc.ontrack = (event) => {
       console.log(`Received track from ${userId}`, event.streams[0]?.id);
       
-      // The crucial part: How to distinguish movie vs webcam
-      // When admin casts, we set a specific ID or check the track kind/label
-      const isMovieStream = event.streams[0]?.id.startsWith('movie-');
+      const stream = event.streams[0];
+      if (!stream) return;
 
-      if (!isAdmin && isMovieStream) {
+      // Check if this stream matches the movie ID we received
+      if (!isAdmin && movieStreamIdRef.current === stream.id) {
         // This is the movie! Put it in the main theater view
         if (guestStreamRef.current) {
-          guestStreamRef.current.srcObject = event.streams[0];
+          guestStreamRef.current.srcObject = stream;
           guestStreamRef.current.play().catch(e => console.warn("Autoplay blocked", e));
         }
       } else {
         // This is a webcam/mic stream! Put it in the call grid
-        if (event.streams[0]) {
-          setRemoteStreams(prev => ({
-            ...prev,
-            [userId]: event.streams[0]
-          }));
-        }
+        setRemoteStreams(prev => ({
+          ...prev,
+          [userId]: stream
+        }));
       }
     };
 
@@ -206,14 +205,18 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
       // @ts-ignore
       const stream = videoRef.current.captureStream ? videoRef.current.captureStream(60) : (videoRef.current as any).mozCaptureStream(60);
       
-      // We can't set the ID but we can wrap it in a new stream if needed? 
-      // Actually captureStream ID is generated. We'll rely on a naming convention if possible or just assume admin sends it.
-      // For now, let's keep the manual ID hack if it works in some browsers, but add a fallback.
-      // @ts-ignore
-      try { Object.defineProperty(stream, 'id', { value: `movie-${myIdRef.current}` }); } catch(e) {}
-      
       setCastingStream(stream);
       castingStreamRef.current = stream;
+      movieStreamIdRef.current = stream.id;
+
+      // Update presence so everyone knows which stream is the movie
+      if (channelRef.current) {
+        await channelRef.current.track({ 
+          user: myId, 
+          name: user?.user_metadata?.full_name || 'Guest',
+          movieStreamId: stream.id 
+        });
+      }
       
       // Add movie tracks to all active peer connections and renegotiate
       for (const [userId, pc] of Object.entries(peerConnections.current)) {
@@ -241,6 +244,24 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
     channel
       .on('broadcast', { event: 'chat' }, ({ payload }) => {
         if (payload.user_id !== myIdRef.current) setMessages(prev => [...prev, payload]);
+      })
+      .on('broadcast', { event: 'movie_stream_info' }, ({ payload }) => {
+        movieStreamIdRef.current = payload.streamId;
+        
+        // If we already received it and it's in remoteStreams, move it to the theater
+        setRemoteStreams(prev => {
+          const next = { ...prev };
+          for (const [peerId, stream] of Object.entries(next)) {
+             if (stream.id === payload.streamId) {
+                if (guestStreamRef.current) {
+                   guestStreamRef.current.srcObject = stream;
+                   guestStreamRef.current.play().catch(()=>{});
+                }
+                delete next[peerId];
+             }
+          }
+          return next;
+        });
       })
       .on('broadcast', { event: 'offer' }, async ({ payload }) => {
         if (payload.to === myIdRef.current) {
@@ -322,7 +343,35 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
         });
       })
       .on('presence', { event: 'sync' }, () => {
-        setParticipants(Object.keys(channel.presenceState()).length);
+        const state = channel.presenceState();
+        setParticipants(Object.keys(state).length);
+
+        // SYNC MOVIE STREAM ID FROM ADMIN
+        Object.values(state).forEach((presences: any) => {
+          presences.forEach((p: any) => {
+            if (p.movieStreamId) {
+              console.log("Syncing movie stream ID from presence:", p.movieStreamId);
+              movieStreamIdRef.current = p.movieStreamId;
+              
+              // Move existing stream if it was misrouted to call grid
+              setRemoteStreams(prev => {
+                const next = { ...prev };
+                let found = false;
+                for (const [peerId, stream] of Object.entries(next)) {
+                  if (stream.id === p.movieStreamId) {
+                    if (guestStreamRef.current) {
+                      guestStreamRef.current.srcObject = stream;
+                      guestStreamRef.current.play().catch(()=>{});
+                      found = true;
+                    }
+                    delete next[peerId];
+                  }
+                }
+                return found ? next : prev;
+              });
+            }
+          });
+        });
       })
       .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
