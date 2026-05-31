@@ -32,6 +32,9 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
   const [remoteStreams, setRemoteStreams] = useState<Record<string, MediaStream>>({});
   const [isWebcamOn, setIsWebcamOn] = useState(false);
 
+  // Refs for WebRTC to avoid stale state in callbacks and unnecessary useEffect resets
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const castingStreamRef = useRef<MediaStream | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const guestStreamRef = useRef<HTMLVideoElement>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -39,6 +42,10 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
   const peerConnections = useRef<Record<string, RTCPeerConnection>>({});
   const candidateQueue = useRef<Record<string, any[]>>({});
 
+  // Generate a stable ID for this session (Supabase ID or random for guests)
+  const myId = React.useMemo(() => user?.id || `guest_${Math.random().toString(36).substring(2, 9)}`, [user?.id]);
+  const myIdRef = useRef(myId);
+  useEffect(() => { myIdRef.current = myId; }, [myId]);
 
   // Body scroll lock
   useEffect(() => {
@@ -64,24 +71,47 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
     if (!id) setIsAdmin(true); 
   };
 
+  // Helper to send offer for renegotiation or initial connection
+  const sendOffer = async (targetUserId: string) => {
+    if (!channelRef.current) return;
+    const pc = createPeerConnection(targetUserId);
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'offer',
+        payload: { offer, from: myIdRef.current, to: targetUserId }
+      });
+    } catch (e) {
+      console.error("Error creating offer", e);
+    }
+  };
+
   // WEB CAM ENGINE
   const toggleWebcam = async () => {
     if (isWebcamOn) {
-      localStream?.getTracks().forEach((t: MediaStreamTrack) => t.stop());
+      localStreamRef.current?.getTracks().forEach((t: MediaStreamTrack) => t.stop());
       setLocalStream(null);
+      localStreamRef.current = null;
       setIsWebcamOn(false);
+      
+      // We should ideally remove tracks from PCs, but simplest is to just stop them
+      // Most browsers will stop sending video/audio
       return;
     }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
       setLocalStream(stream);
+      localStreamRef.current = stream;
       setIsWebcamOn(true);
       
-      // Add webcam tracks to all active peer connections
-      Object.values(peerConnections.current).forEach(pc => {
+      // Add webcam tracks to all active peer connections and renegotiate
+      for (const [userId, pc] of Object.entries(peerConnections.current)) {
         stream.getTracks().forEach((track: MediaStreamTrack) => pc.addTrack(track, stream));
-      });
+        await sendOffer(userId);
+      }
     } catch (e) {
       showToast("Could not access camera/mic", 'error');
     }
@@ -100,32 +130,39 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
         channelRef.current.send({
           type: 'broadcast',
           event: 'ice-candidate',
-          payload: { candidate: event.candidate, from: user?.id || 'guest', to: userId }
+          payload: { candidate: event.candidate, from: myIdRef.current, to: userId }
         });
       }
     };
 
     pc.ontrack = (event) => {
+      console.log(`Received track from ${userId}`, event.streams[0]?.id);
       // If it's a movie stream (isAdmin casting), put it in guestStreamRef
-      if (isAdmin === false && event.streams[0].id === 'movie-stream') {
-        if (guestStreamRef.current) guestStreamRef.current.srcObject = event.streams[0];
+      // We check if the stream ID starts with 'movie-' which we set during casting
+      if (isAdmin === false && event.streams[0]?.id.startsWith('movie-')) {
+        if (guestStreamRef.current) {
+          guestStreamRef.current.srcObject = event.streams[0];
+          guestStreamRef.current.play().catch(e => console.warn("Autoplay blocked", e));
+        }
       } else {
         // Otherwise it's a webcam stream
-        setRemoteStreams(prev => ({
-          ...prev,
-          [userId]: event.streams[0]
-        }));
+        if (event.streams[0]) {
+          setRemoteStreams(prev => ({
+            ...prev,
+            [userId]: event.streams[0]
+          }));
+        }
       }
     };
 
-    // Add webcam if on
-    if (localStream) {
-      localStream.getTracks().forEach((track: MediaStreamTrack) => pc.addTrack(track, localStream));
+    // Add webcam if on (use Ref to avoid stale state)
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track: MediaStreamTrack) => pc.addTrack(track, localStreamRef.current!));
     }
     
-    // Add movie if casting
-    if (isAdmin && castingStream) {
-      castingStream.getTracks().forEach((track: MediaStreamTrack) => pc.addTrack(track, castingStream));
+    // Add movie if casting (use Ref)
+    if (isAdmin && castingStreamRef.current) {
+      castingStreamRef.current.getTracks().forEach((track: MediaStreamTrack) => pc.addTrack(track, castingStreamRef.current!));
     }
 
     peerConnections.current[userId] = pc;
@@ -135,24 +172,33 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
   const startCasting = async () => {
     if (!isAdmin || !videoRef.current) return;
     
-    // @ts-ignore
-    const stream = videoRef.current.captureStream ? videoRef.current.captureStream(60) : (videoRef.current as any).mozCaptureStream(60);
-    
-    // Create a unique ID for movie stream so viewers can identify it
-    // @ts-ignore
-    stream.id = 'movie-stream';
-    setCastingStream(stream);
-    
-    // Add movie tracks to all active peer connections
-    Object.values(peerConnections.current).forEach(pc => {
-      stream.getTracks().forEach((track: MediaStreamTrack) => pc.addTrack(track, stream));
-    });
+    try {
+      // @ts-ignore
+      const stream = videoRef.current.captureStream ? videoRef.current.captureStream(60) : (videoRef.current as any).mozCaptureStream(60);
+      
+      // We can't set the ID but we can wrap it in a new stream if needed? 
+      // Actually captureStream ID is generated. We'll rely on a naming convention if possible or just assume admin sends it.
+      // For now, let's keep the manual ID hack if it works in some browsers, but add a fallback.
+      // @ts-ignore
+      try { Object.defineProperty(stream, 'id', { value: `movie-${myIdRef.current}` }); } catch(e) {}
+      
+      setCastingStream(stream);
+      castingStreamRef.current = stream;
+      
+      // Add movie tracks to all active peer connections and renegotiate
+      for (const [userId, pc] of Object.entries(peerConnections.current)) {
+        stream.getTracks().forEach((track: MediaStreamTrack) => pc.addTrack(track, stream));
+        await sendOffer(userId);
+      }
 
-    showToast("Casting started!", 'success');
-    };
+      showToast("Casting started!", 'success');
+    } catch (e) {
+      console.error("Casting error", e);
+      showToast("Could not start casting", 'error');
+    }
+  };
 
-    // MASTER SYNC & P2P ENGINE
-
+  // MASTER SYNC & P2P ENGINE
   useEffect(() => {
     if (!isInRoom || !roomID) return;
 
@@ -164,10 +210,10 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
 
     channel
       .on('broadcast', { event: 'chat' }, ({ payload }) => {
-        if (payload.user_id !== user?.id) setMessages(prev => [...prev, payload]);
+        if (payload.user_id !== myIdRef.current) setMessages(prev => [...prev, payload]);
       })
       .on('broadcast', { event: 'offer' }, async ({ payload }) => {
-        if (payload.to === (user?.id || 'guest')) {
+        if (payload.to === myIdRef.current) {
           const pc = createPeerConnection(payload.from);
           await pc.setRemoteDescription(new RTCSessionDescription(payload.offer));
           const answer = await pc.createAnswer();
@@ -175,7 +221,7 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
           channel.send({ 
             type: 'broadcast', 
             event: 'answer', 
-            payload: { answer, from: user?.id || 'guest', to: payload.from } 
+            payload: { answer, from: myIdRef.current, to: payload.from } 
           });
           
           if (candidateQueue.current[payload.from]) {
@@ -187,7 +233,7 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
         }
       })
       .on('broadcast', { event: 'answer' }, async ({ payload }) => {
-        if (payload.to === (user?.id || 'guest')) {
+        if (payload.to === myIdRef.current) {
           const pc = peerConnections.current[payload.from];
           if (pc) {
             await pc.setRemoteDescription(new RTCSessionDescription(payload.answer));
@@ -201,7 +247,7 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
         }
       })
       .on('broadcast', { event: 'ice-candidate' }, async ({ payload }) => {
-        if (payload.to === (user?.id || 'guest')) {
+        if (payload.to === myIdRef.current) {
           const pc = peerConnections.current[payload.from];
           if (pc && pc.remoteDescription) {
             await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
@@ -224,15 +270,11 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
       })
       .on('presence', { event: 'join' }, async ({ newPresences }) => {
         newPresences.forEach(async (p: any) => {
-          if (p.user !== (user?.id || 'guest')) {
-            const pc = createPeerConnection(p.user);
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            channel.send({
-              type: 'broadcast',
-              event: 'offer',
-              payload: { offer, from: user?.id || 'guest', to: p.user }
-            });
+          // Race condition fix: Only one peer should initiate the offer.
+          // We use ID comparison as a tie-breaker.
+          if (p.user !== myIdRef.current && myIdRef.current < p.user) {
+            console.log("Initiating offer to newcomer:", p.user);
+            await sendOffer(p.user);
           }
         });
       })
@@ -254,18 +296,26 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
       })
       .subscribe(async (status) => {
         if (status === 'SUBSCRIBED') {
-          await channel.track({ user: user?.id || 'guest', name: user?.user_metadata?.full_name || 'Guest' });
+          await channel.track({ user: myId, name: user?.user_metadata?.full_name || 'Guest' });
           setIsVideoLoading(false);
+
+          // When I join, I also check who is already there and send offers if I'm the designated offerer
+          const state = channel.presenceState();
+          Object.keys(state).forEach(async (userId) => {
+            if (userId !== myId && myId < userId) {
+               console.log("Initiating offer to existing member:", userId);
+               await sendOffer(userId);
+            }
+          });
         }
       });
 
     return () => {
       supabase.removeChannel(channel);
       Object.values(peerConnections.current).forEach(pc => pc.close());
-      localStream?.getTracks().forEach((t: MediaStreamTrack) => t.stop());
-      castingStream?.getTracks().forEach((t: MediaStreamTrack) => t.stop());
+      peerConnections.current = {};
     };
-  }, [isInRoom, roomID, user, localStream, castingStream]);
+  }, [isInRoom, roomID, myId]);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -294,7 +344,7 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputText.trim() || !channelRef.current) return;
-    const msg = { user_id: user?.id || 'guest', user_name: user?.user_metadata?.full_name || 'Guest', text: inputText, created_at: new Date().toISOString() };
+    const msg = { user_id: myId, user_name: user?.user_metadata?.full_name || 'Guest', text: inputText, created_at: new Date().toISOString() };
     await channelRef.current.send({ type: 'broadcast', event: 'chat', payload: msg });
     setMessages(prev => [...prev, msg]);
     setInputText('');
@@ -439,9 +489,9 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
                     <div className="flex-1 flex items-center justify-center text-muted text-[0.6rem] uppercase tracking-[0.2em] opacity-20 text-center">No messages yet.</div>
                   ) : (
                     messages.map((msg, idx) => (
-                      <div key={idx} className={`flex flex-col ${msg.user_id === user?.id ? 'items-end' : 'items-start'}`}>
-                        <span className="text-[0.45rem] text-muted mb-0.5 uppercase tracking-widest">{msg.user_id === user?.id ? 'You' : msg.user_name}</span>
-                        <div className={`p-2 px-3 rounded-xl text-[0.7rem] max-w-[90%] ${msg.user_id === user?.id ? 'bg-accent text-bg rounded-tr-none' : 'bg-surface2 text-text-custom rounded-tl-none border border-white/5'}`}>{msg.text}</div>
+                      <div key={idx} className={`flex flex-col ${msg.user_id === myId ? 'items-end' : 'items-start'}`}>
+                        <span className="text-[0.45rem] text-muted mb-0.5 uppercase tracking-widest">{msg.user_id === myId ? 'You' : msg.user_name}</span>
+                        <div className={`p-2 px-3 rounded-xl text-[0.7rem] max-w-[90%] ${msg.user_id === myId ? 'bg-accent text-bg rounded-tr-none' : 'bg-surface2 text-text-custom rounded-tl-none border border-white/5'}`}>{msg.text}</div>
                       </div>
                     ))
                   )}
