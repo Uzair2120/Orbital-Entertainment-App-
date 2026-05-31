@@ -1,0 +1,124 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0a0a0f;
+  --color-surface: #12121a;
+  --color-surface2: #1a1a26;
+  --color-border-custom: #ffffff0f;
+  --color-accent: #e8b84b;
+  --color-accent2: #ff6b6b;
+  --color-text-custom: #f0eee8;
+  --color-muted: #7a7a8a;
+
+  --font-bebas: var(--font-bebas);
+  --font-dm: var(--font-dm);
+}
+
+:root {
+  --background: #0a0a0f;
+  --foreground: #f0eee8;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-dm);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Grain texture overlay */
+/* body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0.4;
+} */
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #1a1a26;
+  border-radius: 3px;
+}
+
+/* Chatbot Markdown Styles */
+.prose-chatbot {
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+.prose-chatbot ul {
+  list-style-type: disc;
+  margin-left: 1.25rem;
+  margin-bottom: 0.75rem;
+}
+.prose-chatbot ol {
+  list-style-type: decimal;
+  margin-left: 1.25rem;
+  margin-bottom: 0.75rem;
+}
+.prose-chatbot li {
+  margin-bottom: 0.25rem;
+}
+.prose-chatbot p {
+  margin-bottom: 0.75rem;
+}
+.prose-chatbot strong {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+/* --------------------------------------------------
+   1. Base Mobile Layout (Default Styles)
+   Targeted sizes: Portrait phones up to 575px
+   -------------------------------------------------- */
+body {
+  font-size: 1rem;
+}
+
+/* --------------------------------------------------
+   2. Small Devices (Landscape Phones)
+   Targeted sizes: 576px and up
+   -------------------------------------------------- */
+@media (min-width: 576px) {
+  /* Your custom responsive CSS styles go here */
+}
+
+/* --------------------------------------------------
+   3. Medium Devices (Tablets)
+   Targeted sizes: 768px and up
+   -------------------------------------------------- */
+@media (min-width: 768px) {
+  /* Your custom responsive CSS styles go here */
+}
+
+/* --------------------------------------------------
+   4. Large Devices (Laptops / Small Desktops)
+   Targeted sizes: 992px and up
+   -------------------------------------------------- */
+@media (min-width: 992px) {
+  /* Your custom responsive CSS styles go here */
+}
+
+/* --------------------------------------------------
+   5. Extra Large Devices (Large Desktops)
+   Targeted sizes: 1200px and up
+   -------------------------------------------------- */
+@media (min-width: 1200px) {
+  /* Your custom responsive CSS styles go here */
+}
+
+/* --------------------------------------------------
+   6. Extra Extra Large Devices (4K Monitors / Large TVs)
+   Targeted sizes: 1400px and up
+   -------------------------------------------------- */
+@media (min-width: 1400px) {
+  /* Your custom responsive CSS styles go here */
+}
