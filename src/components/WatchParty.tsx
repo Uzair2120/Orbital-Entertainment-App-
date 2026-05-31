@@ -42,6 +42,7 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
   const chatEndRef = useRef<HTMLDivElement>(null);
   const channelRef = useRef<any>(null);
   const peerConnections = useRef<Record<string, RTCPeerConnection>>({});
+  const movieSenders = useRef<Record<string, RTCRtpSender[]>>({});
   const candidateQueue = useRef<Record<string, any[]>>({});
 
   // Generate a stable ID for this session (Supabase ID or random for guests)
@@ -90,21 +91,44 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
     }
   };
 
-  // Helper to ensure local stream exists
+  // Helper to ensure local stream exists with ultra-high quality
   const ensureLocalStream = async () => {
     if (localStreamRef.current) return localStreamRef.current;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const constraints = {
+        video: {
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          frameRate: { ideal: 60 },
+          facingMode: "user"
+        },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      };
+      
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       localStreamRef.current = stream;
       setLocalStream(stream);
       
-      // Default to both disabled initially if toggled individually, 
-      // but toggleWebcam/toggleMic will enable what's needed.
+      // Default to both disabled initially if toggled individually
       stream.getTracks().forEach(track => track.enabled = false);
       
       // Add tracks to all active peer connections
       for (const [userId, pc] of Object.entries(peerConnections.current)) {
-        stream.getTracks().forEach((track: MediaStreamTrack) => pc.addTrack(track, stream));
+        stream.getTracks().forEach((track: MediaStreamTrack) => {
+          const sender = pc.addTrack(track, stream);
+          
+          // Set ultra-high bitrate for video if supported
+          if (track.kind === 'video') {
+            const params = sender.getParameters();
+            if (!params.encodings) params.encodings = [{}];
+            params.encodings[0].maxBitrate = 10000000; // 10 Mbps for 1080p 60fps
+            sender.setParameters(params).catch(e => console.warn("Bitrate config failed", e));
+          }
+        });
         await sendOffer(userId);
       }
       return stream;
@@ -201,6 +225,38 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
   const startCasting = async () => {
     if (!isAdmin || !videoRef.current) return;
     
+    // If already casting, this button acts as "Stop Casting"
+    if (castingStreamRef.current) {
+      castingStreamRef.current.getTracks().forEach(t => t.stop());
+      
+      // Remove tracks from all peer connections
+      for (const [userId, pc] of Object.entries(peerConnections.current)) {
+        if (movieSenders.current[userId]) {
+          movieSenders.current[userId].forEach(sender => {
+            try { pc.removeTrack(sender); } catch(e) {}
+          });
+          delete movieSenders.current[userId];
+        }
+        await sendOffer(userId);
+      }
+      
+      setCastingStream(null);
+      castingStreamRef.current = null;
+      movieStreamIdRef.current = null;
+      
+      // Update presence
+      if (channelRef.current) {
+        await channelRef.current.track({ 
+          user: myId, 
+          name: user?.user_metadata?.full_name || 'Guest',
+          movieStreamId: null 
+        });
+      }
+      
+      showToast("Casting stopped", 'info');
+      return;
+    }
+    
     try {
       // @ts-ignore
       const stream = videoRef.current.captureStream ? videoRef.current.captureStream(60) : (videoRef.current as any).mozCaptureStream(60);
@@ -218,9 +274,14 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
         });
       }
       
-      // Add movie tracks to all active peer connections and renegotiate
+      // Add movie tracks to all active peer connections
       for (const [userId, pc] of Object.entries(peerConnections.current)) {
-        stream.getTracks().forEach((track: MediaStreamTrack) => pc.addTrack(track, stream));
+        const senders: RTCRtpSender[] = [];
+        stream.getTracks().forEach((track: MediaStreamTrack) => {
+          const sender = pc.addTrack(track, stream);
+          senders.push(sender);
+        });
+        movieSenders.current[userId] = senders;
         await sendOffer(userId);
       }
 
@@ -466,8 +527,8 @@ const WatchParty: React.FC<WatchPartyProps> = ({ isOpen, onClose, user, showToas
                      <input type="file" accept="video/*" className="hidden" onChange={handleFileSelect} />
                    </label>
                    {localFileUrl && (
-                     <button onClick={startCasting} className="bg-accent text-bg font-bebas text-[0.6rem] sm:text-xs tracking-widest px-3 py-1.5 rounded-full hover:bg-[#f5c85a] transition-all">
-                       📡 CAST
+                     <button onClick={startCasting} className={`${castingStream ? 'bg-red-500' : 'bg-accent'} text-bg font-bebas text-[0.6rem] sm:text-xs tracking-widest px-3 py-1.5 rounded-full hover:opacity-80 transition-all`}>
+                       {castingStream ? '🛑 STOP CAST' : '📡 CAST'}
                      </button>
                    )}
                  </div>
